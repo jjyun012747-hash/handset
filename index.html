@@ -109,6 +109,7 @@
   button:focus-visible { outline: 1px solid var(--ink); outline-offset: 3px; }
 
   .btns { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  select { width: 100%; padding: 7px 8px; border: 1px solid var(--ink); border-radius: 0; background: transparent; color: var(--ink); font: inherit; font-size: 12px; cursor: pointer; }
   .fname { margin-top: 8px; color: var(--mute); font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .swatch { display: flex; align-items: center; gap: 6px; font-size: 8.5px; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; cursor: pointer; }
   .dim { opacity: .35; pointer-events: none; }
@@ -154,6 +155,9 @@
     .bar { width: 100%; padding: 16px 16px 24px; overflow: visible; }
   }
 </style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bungee&family=Rubik+Mono+One&family=Press+Start+2P&family=Pixelify+Sans:wght@700&family=DM+Serif+Display:ital@0;1&family=Space+Mono:wght@700&family=Black+Han+Sans&family=Nanum+Myeongjo:wght@800&display=swap" rel="stylesheet">
 </head>
 <body>
   <main class="stage">
@@ -176,6 +180,18 @@
         </div>
         <div class="fname" id="fname">기본 이미지 · 끌어다 놓기, 붙여넣기도 돼요</div>
         <input id="file" type="file" accept="image/*" hidden>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="vlabel">Font</div>
+      <div>
+        <select id="font" aria-label="Font"></select>
+        <div class="btns" style="margin-top: 8px">
+          <button id="fontUpload" type="button">Upload font</button>
+        </div>
+        <div class="fname" id="fontName">.ttf .otf .woff 파일도 쓸 수 있어요</div>
+        <input id="fontFile" type="file" accept=".ttf,.otf,.woff,.woff2,font/*" hidden>
       </div>
     </div>
 
@@ -255,7 +271,26 @@ let bgFill = '#000000';      // background actually painted (BG swatch)
 let mono = false;            // Mono: every letter in the Ink colour; Photo: letters keep the image colours
 let userImg = null, srcCache = null;
 const GUTTER = 0;            // gap between the two halves (source pixels)
-const FONT = '"Arial Black", "Segoe UI Black", "Malgun Gothic", sans-serif';
+// Typefaces: [label, CSS family list, weight, style, size factor (wide fonts are scaled down to fit the cell)]
+const FONTS = [
+  ['Arial Black', '"Arial Black", "Segoe UI Black", "Malgun Gothic", sans-serif', 900, 'normal', 0.98],
+  ['Helvetica Bold', '"Helvetica Neue", Helvetica, Arial, "Malgun Gothic", sans-serif', 700, 'normal', 1.0],
+  ['Impact', 'Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif', 400, 'normal', 1.05],
+  ['Georgia Bold', 'Georgia, "Times New Roman", serif', 700, 'normal', 0.98],
+  ['Times Italic', '"Times New Roman", Times, serif', 700, 'italic', 1.05],
+  ['Courier Bold', '"Courier New", Courier, monospace', 700, 'normal', 0.95],
+  ['DM Serif Display', '"DM Serif Display", Georgia, serif', 400, 'normal', 1.0],
+  ['DM Serif Italic', '"DM Serif Display", Georgia, serif', 400, 'italic', 1.0],
+  ['Bungee', 'Bungee, "Arial Black", sans-serif', 400, 'normal', 0.82],
+  ['Rubik Mono One', '"Rubik Mono One", "Arial Black", sans-serif', 400, 'normal', 0.72],
+  ['Space Mono Bold', '"Space Mono", "Courier New", monospace', 700, 'normal', 0.9],
+  ['Press Start 2P', '"Press Start 2P", monospace', 400, 'normal', 0.62],
+  ['Pixelify Sans', '"Pixelify Sans", monospace', 700, 'normal', 1.0],
+  ['Black Han Sans (한글)', '"Black Han Sans", "Malgun Gothic", sans-serif', 400, 'normal', 1.0],
+  ['Nanum Myeongjo (한글)', '"Nanum Myeongjo", serif', 800, 'normal', 1.0],
+];
+let font = { css: FONTS[0][1], weight: FONTS[0][2], style: FONTS[0][3], scale: FONTS[0][4] };
+let FONT = font.css;
 
 // The portrait photo is cut in half; the top half goes left, the bottom half right.
 let src = null;
@@ -405,7 +440,7 @@ function getSprite(ch, r, g, b) {
   c.beginPath(); c.rect(spr.sx, spr.sy, sprPx, sprPx); c.clip();       // keep each glyph inside its slot
   c.translate(spr.sx, spr.sy);
   const wide = ch.charCodeAt(0) > 0x2E80;                        // Hangul etc. are ~2x wider
-  c.font = `900 ${curCellH * dpr * (wide ? 0.75 : 0.98)}px ${FONT}`;
+  c.font = `${font.style} ${font.weight} ${curCellH * dpr * (wide ? 0.75 : font.scale)}px ${font.css}`;
   c.fillStyle = `rgb(${cr},${cg},${cb})`;
   spr.ch = ch; spr.hex = hex([cr, cg, cb]);                     // kept for the SVG export
   c.textAlign = 'center';
@@ -880,6 +915,44 @@ document.addEventListener('paste', e => {
   loadImageFile(new File([f], f.name && f.name !== 'image.png' ? f.name : '붙여넣은 이미지', { type: f.type }));
 });
 
+/* ---------- Font ---------- */
+const fontSel = document.getElementById('font');
+const fontFileIn = document.getElementById('fontFile');
+const fontNameEl = document.getElementById('fontName');
+FONTS.forEach(([label], i) => fontSel.add(new Option(label, String(i))));
+async function useFont(f) {
+  font = f; FONT = f.css;
+  try { await document.fonts.load(`${f.style} ${f.weight} 40px ${f.css}`, input.value || 'A'); } catch (e) {}
+  render();
+}
+fontSel.addEventListener('change', () => {
+  const v = fontSel.value;
+  if (v.startsWith('u')) return useFont(userFonts[+v.slice(1)]);
+  const [, css, weight, style, scale] = FONTS[+v];
+  useFont({ css, weight, style, scale });
+});
+const userFonts = [];
+// web-font subsets (e.g. Hangul) arrive lazily: redraw when they land
+document.fonts.addEventListener('loadingdone', () => render());
+document.getElementById('fontUpload').addEventListener('click', () => fontFileIn.click());
+fontFileIn.addEventListener('change', async () => {
+  const file = fontFileIn.files[0]; fontFileIn.value = '';
+  if (!file) return;
+  const fam = 'HS User ' + (userFonts.length + 1);
+  try {
+    const face = new FontFace(fam, await file.arrayBuffer());
+    await face.load();
+    document.fonts.add(face);
+  } catch (e) { fontNameEl.textContent = '폰트를 읽을 수 없어요'; return; }
+  const f = { css: `"${fam}", sans-serif`, weight: 400, style: 'normal', scale: 0.95 };
+  userFonts.push(f);
+  const label = file.name.replace(/\.[^.]+$/, '');
+  fontSel.add(new Option(label + ' (업로드)', 'u' + (userFonts.length - 1)));
+  fontSel.value = 'u' + (userFonts.length - 1);
+  fontNameEl.textContent = file.name;
+  useFont(f);
+});
+
 /* ---------- Colour controls ---------- */
 document.getElementById('modePhoto').addEventListener('click', () => setMode(false));
 document.getElementById('modeMono').addEventListener('click', () => setMode(true));
@@ -898,7 +971,7 @@ function exportSVG() {
   const W = Math.round(canvas.clientWidth), H = Math.round(canvas.clientHeight);
   const f = v => +v.toFixed(2);
   const esc = c => c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c;
-  const fs = P.cellH * 0.98, fsWide = P.cellH * 0.75;
+  const fs = P.cellH * font.scale, fsWide = P.cellH * 0.75;
   const groups = new Map();
   for (let i = 0; i < P.n; i++) {
     const s = P.spr[i], wide = s.ch.charCodeAt(0) > 0x2E80, size = wide ? fsWide : fs;
@@ -915,7 +988,7 @@ function exportSVG() {
   const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
 <rect width="${W}" height="${H}" fill="${bgFill}"/>
-<g font-family="'Arial Black', 'Segoe UI Black', 'Malgun Gothic', sans-serif" font-weight="900" font-size="${f(fs)}" text-anchor="middle">
+<g font-family="${font.css.replace(/"/g, "'")}" font-weight="${font.weight}" font-style="${font.style}" font-size="${f(fs)}" text-anchor="middle">
 ${body}</g>
 </svg>
 `;
