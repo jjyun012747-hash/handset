@@ -50,6 +50,9 @@
       if (spec.style === 'bars') {
         o.fillStyle = spec.colors[((row % spec.colors.length) + spec.colors.length) % spec.colors.length];
         o.save(); o.translate(x, y); o.rotate(R[i]); o.fillRect(-cw * .56, -ch * .27, cw * 1.12, ch * .54); o.restore();
+      } else if (spec.style === 'vbars') {
+        o.fillStyle = spec.colors[((col % spec.colors.length) + spec.colors.length) % spec.colors.length];
+        o.save(); o.translate(x, y); o.rotate(R[i]); o.fillRect(-cw * .28, -ch * .56, cw * .56, ch * 1.12); o.restore();
       } else if (spec.style === 'squares') {
         o.fillStyle = spec.colors[i % spec.colors.length];
         const q = spec.sq; o.fillRect(x - q / 2, y - q / 2, q, q);
