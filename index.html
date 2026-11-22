@@ -43,6 +43,7 @@
     display: flex;
     flex-direction: column;
     padding: 28px;
+    overflow-y: auto;
   }
 
 
@@ -107,6 +108,18 @@
   button:disabled { opacity: .4; cursor: default; }
   button:focus-visible { outline: 1px solid var(--ink); outline-offset: 3px; }
 
+  .btns { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .fname { margin-top: 8px; color: var(--mute); font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .swatch { display: flex; align-items: center; gap: 6px; font-size: 8.5px; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; cursor: pointer; }
+  .dim { opacity: .35; pointer-events: none; }
+  .cut { margin-top: 14px; }
+  .cut .ticks { margin: 0 0 2px; }
+  input[type=color] { -webkit-appearance: none; appearance: none; width: 22px; height: 22px; padding: 0; border: 1px solid var(--ink); border-radius: 0; background: none; cursor: pointer; }
+  input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
+  input[type=color]::-webkit-color-swatch { border: 0; border-radius: 0; }
+  input[type=color]::-moz-color-swatch { border: 0; border-radius: 0; }
+  .stage.drop { outline: 1px dashed var(--ink); outline-offset: -14px; }
+
   /* where the fingertip is, while the camera sees a hand */
   #finger {
     position: fixed;
@@ -138,7 +151,7 @@
   @media (max-width: 860px) {
     body { flex-direction: column; height: auto; min-height: 100vh; overflow: auto; }
     #mosaic { height: 50vw; min-height: 200px; }
-    .bar { width: 100%; padding: 16px 16px 24px; }
+    .bar { width: 100%; padding: 16px 16px 24px; overflow: visible; }
   }
 </style>
 </head>
@@ -152,6 +165,37 @@
     <div class="row">
       <div class="vlabel">Input</div>
       <textarea id="input" rows="3" placeholder="텍스트를 입력하세요" autofocus>MUSHROOM</textarea>
+    </div>
+
+    <div class="row">
+      <div class="vlabel">Image</div>
+      <div>
+        <div class="btns">
+          <button id="upload" type="button">Upload</button>
+          <button id="reset" type="button" disabled>Default</button>
+        </div>
+        <div class="fname" id="fname">기본 이미지 · 파일을 끌어다 놓아도 돼요</div>
+        <input id="file" type="file" accept="image/*" hidden>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="vlabel">Color</div>
+      <div>
+        <div class="btns">
+          <button id="modePhoto" type="button" aria-pressed="true">Photo</button>
+          <button id="modeMono" type="button" aria-pressed="false">Mono</button>
+        </div>
+        <div class="btns" id="monoCtl" style="margin-top: 12px">
+          <label class="swatch"><input id="bgCol" type="color" value="#000000">BG</label>
+          <label class="swatch"><input id="inkCol" type="color" value="#ffffff">Ink</label>
+          <button id="auto" type="button">Auto</button>
+        </div>
+        <div class="cut">
+          <div class="ticks"><span>CUT</span><output id="cutVal">40</output></div>
+          <input id="cut" type="range" min="5" max="160" value="40">
+        </div>
+      </div>
     </div>
 
     <div class="row">
@@ -170,6 +214,11 @@
         <input id="force" type="range" min="1" max="5" value="5">
         <div class="ticks"><span>01</span><span>05</span></div>
       </div>
+    </div>
+
+    <div class="row">
+      <div class="vlabel">Export</div>
+      <div><button id="svg" type="button">SVG</button></div>
     </div>
 
     <div class="row">
@@ -196,7 +245,15 @@ const canvas = document.getElementById('canvas');
 const stage  = document.getElementById('mosaic');
 const ctx    = canvas.getContext('2d');
 
-const BG_LUM = 34;           // cells darker than this are treated as background
+const cutIn  = document.getElementById('cut');
+const bgIn   = document.getElementById('bgCol');
+const inkIn  = document.getElementById('inkCol');
+
+// Background = one solid colour picked from the image's border; cells far enough from it are the subject
+let keyBg = [0, 0, 0];       // detected background (used for the cut-out mask)
+let bgFill = '#000000';      // background actually painted (BG swatch)
+let mono = false;            // Mono: every letter in the Ink colour; Photo: letters keep the image colours
+let userImg = null, srcCache = null;
 const GUTTER = 0;            // gap between the two halves (source pixels)
 const FONT = '"Arial Black", "Segoe UI Black", "Malgun Gothic", sans-serif';
 
@@ -213,13 +270,88 @@ img.onload = () => {
   sc.fillRect(0, 0, src.width, src.height);
   sc.drawImage(img, 0, 0, iw, half, 0, 0, iw, half);
   sc.drawImage(img, 0, half, iw, ih - half, iw + GUTTER, 0, iw, ih - half);
+  if (!userImg) applyColours(src);
   render();
 };
 img.src = IMG_SRC;
 
+/* ---------- Colours: background detection + auto ink ---------- */
+const hex = a => '#' + a.map(v => Math.round(v).toString(16).padStart(2, '0')).join('');
+const rgbOf = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+const lumOf = ([r, g, b]) => 0.299 * r + 0.587 * g + 0.114 * b;
+
+function tiny(S, n = 64) {
+  const c = document.createElement('canvas');
+  c.width = c.height = n;
+  const cx = c.getContext('2d', { willReadFrequently: true });
+  cx.drawImage(S, 0, 0, n, n);
+  return cx.getImageData(0, 0, n, n).data;
+}
+
+// most common colour bucket along the image border, averaged
+function detectBg(S) {
+  const n = 64, d = tiny(S, n), buckets = new Map();
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+    if (x > 1 && x < n - 2 && y > 1 && y < n - 2) continue;
+    const i = (y * n + x) * 4, k = (d[i] >> 4) + ',' + (d[i + 1] >> 4) + ',' + (d[i + 2] >> 4);
+    const b = buckets.get(k) || [0, 0, 0, 0];
+    b[0] += d[i]; b[1] += d[i + 1]; b[2] += d[i + 2]; b[3]++;
+    buckets.set(k, b);
+  }
+  let best = null;
+  for (const b of buckets.values()) if (!best || b[3] > best[3]) best = b;
+  return [best[0] / best[3], best[1] / best[3], best[2] / best[3]];
+}
+
+// most common subject colour; falls back to black/white when it is too close to the background
+function autoInk(S) {
+  const n = 64, d = tiny(S, n), buckets = new Map(), cut = +cutIn.value;
+  for (let i = 0; i < d.length; i += 4) {
+    if (Math.hypot(d[i] - keyBg[0], d[i + 1] - keyBg[1], d[i + 2] - keyBg[2]) < cut) continue;
+    const k = (d[i] >> 5) + ',' + (d[i + 1] >> 5) + ',' + (d[i + 2] >> 5);
+    const b = buckets.get(k) || [0, 0, 0, 0];
+    b[0] += d[i]; b[1] += d[i + 1]; b[2] += d[i + 2]; b[3]++;
+    buckets.set(k, b);
+  }
+  let best = null;
+  for (const b of buckets.values()) if (!best || b[3] > best[3]) best = b;
+  const bl = lumOf(keyBg);
+  if (best) {
+    const c = [best[0] / best[3], best[1] / best[3], best[2] / best[3]];
+    if (Math.abs(lumOf(c) - bl) > 70) return c;
+  }
+  return bl > 128 ? [17, 17, 17] : [255, 255, 255];
+}
+
+function applyColours(S) {
+  keyBg = detectBg(S);
+  bgFill = hex(keyBg);
+  bgIn.value = bgFill;
+  inkIn.value = hex(autoInk(S));
+}
+
+// uploaded images keep their proportions, centred on the background colour
+function sourceFor(W, H) {
+  if (!userImg) return src;
+  const key = W + 'x' + H;
+  if (srcCache && srcCache.key === key) return srcCache.c;
+  const s = Math.min(1, 1600 / Math.max(W, H));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(W * s)); c.height = Math.max(1, Math.round(H * s));
+  const cx = c.getContext('2d');
+  cx.fillStyle = hex(keyBg);
+  cx.fillRect(0, 0, c.width, c.height);
+  const k = Math.min(c.width / userImg.width, c.height / userImg.height) * 0.94;
+  const dw = userImg.width * k, dh = userImg.height * k;
+  cx.imageSmoothingQuality = 'high';
+  cx.drawImage(userImg, (c.width - dw) / 2, (c.height - dh) / 2, dw, dh);
+  srcCache = { key, c };
+  return c;
+}
+
 // Shrink the source to cols x rows by repeated halving (avoids aliasing)
-function sampleGrid(cols, rows) {
-  let cur = src, w = src.width, h = src.height;
+function sampleGrid(S, cols, rows) {
+  let cur = S, w = S.width, h = S.height;
   while (w / 2 > cols && h / 2 > rows) {
     const c = document.createElement('canvas');
     c.width = Math.ceil(w / 2); c.height = Math.ceil(h / 2);
@@ -275,6 +407,7 @@ function getSprite(ch, r, g, b) {
   const wide = ch.charCodeAt(0) > 0x2E80;                        // Hangul etc. are ~2x wider
   c.font = `900 ${curCellH * dpr * (wide ? 0.75 : 0.98)}px ${FONT}`;
   c.fillStyle = `rgb(${cr},${cg},${cb})`;
+  spr.ch = ch; spr.hex = hex([cr, cg, cb]);                     // kept for the SVG export
   c.textAlign = 'center';
   c.textBaseline = 'middle';
   c.fillText(ch, sprPx / 2, sprPx / 2);
@@ -305,15 +438,16 @@ function render() {
 
   const cx = [], cy = [], sp = [], ci = [];
   if (chars.length && cols > 0 && rows > 0) {
-    const px = sampleGrid(cols, rows);
+    const px = sampleGrid(sourceFor(W, H), cols, rows);
+    const cut = +cutIn.value, ink = rgbOf(inkIn.value);
     let k = 0;
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
         const i = (y * cols + x) * 4;
         const r0 = px[i], g0 = px[i + 1], b0 = px[i + 2];
         const lum = 0.299 * r0 + 0.587 * g0 + 0.114 * b0;
-        if (lum < BG_LUM) continue;                                  // background: leave black
-        const [r, g, b] = vivid(r0, g0, b0, lum);
+        if (Math.hypot(r0 - keyBg[0], g0 - keyBg[1], b0 - keyBg[2]) < cut) continue;   // background
+        const [r, g, b] = mono ? ink : vivid(r0, g0, b0, lum);
         cx.push(x * cellW + cellW / 2);
         cy.push(y * cellH + cellH / 2);
         ci.push(y * cols + x);
@@ -349,7 +483,7 @@ function render() {
 
 function draw() {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = '#000';
+  ctx.fillStyle = bgFill;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   if (!P) return;
   const half = sprPx / 2;
@@ -391,7 +525,7 @@ function drawTiles(tiles) {
   ctx.beginPath();
   for (const t of tiles) ctx.rect((t % tw) * TS, Math.floor(t / tw) * TS, TS, TS);
   ctx.clip();
-  ctx.fillStyle = '#000';
+  ctx.fillStyle = bgFill;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   const m = sprPx * 0.6 / dpr, ids = [];
@@ -680,6 +814,112 @@ size.addEventListener('input', () => {
   render();
 });
 new ResizeObserver(render).observe(stage);
+
+/* ---------- Image upload ---------- */
+const fileIn = document.getElementById('file');
+const fname  = document.getElementById('fname');
+const resetB = document.getElementById('reset');
+
+function setMode(m) {
+  mono = m;
+  document.getElementById('modePhoto').setAttribute('aria-pressed', String(!m));
+  document.getElementById('modeMono').setAttribute('aria-pressed', String(m));
+  document.getElementById('inkCol').closest('label').classList.toggle('dim', !m);
+  render();
+}
+
+function loadImageFile(file) {
+  if (!file || !file.type.startsWith('image/')) return;
+  const url = URL.createObjectURL(file);
+  const im = new Image();
+  im.onload = () => {
+    URL.revokeObjectURL(url);
+    const s = Math.min(1, 1600 / Math.max(im.naturalWidth, im.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(im.naturalWidth * s));
+    c.height = Math.max(1, Math.round(im.naturalHeight * s));
+    const cx = c.getContext('2d');
+    cx.fillStyle = '#fff';                                          // transparent PNGs sit on white
+    cx.fillRect(0, 0, c.width, c.height);
+    cx.drawImage(im, 0, 0, c.width, c.height);
+    userImg = c; srcCache = null;
+    applyColours(c);
+    fname.textContent = file.name;
+    resetB.disabled = false;
+    setMode(true);
+  };
+  im.onerror = () => { URL.revokeObjectURL(url); fname.textContent = '이미지를 열 수 없어요'; };
+  im.src = url;
+}
+
+document.getElementById('upload').addEventListener('click', () => fileIn.click());
+fileIn.addEventListener('change', () => { loadImageFile(fileIn.files[0]); fileIn.value = ''; });
+resetB.addEventListener('click', () => {
+  userImg = srcCache = null;
+  applyColours(src);
+  fname.textContent = '기본 이미지 · 파일을 끌어다 놓아도 돼요';
+  resetB.disabled = true;
+  setMode(false);
+});
+
+const stageEl = document.querySelector('.stage');
+stageEl.addEventListener('dragover', e => { e.preventDefault(); stageEl.classList.add('drop'); });
+stageEl.addEventListener('dragleave', () => stageEl.classList.remove('drop'));
+stageEl.addEventListener('drop', e => {
+  e.preventDefault();
+  stageEl.classList.remove('drop');
+  loadImageFile(e.dataTransfer.files[0]);
+});
+
+/* ---------- Colour controls ---------- */
+document.getElementById('modePhoto').addEventListener('click', () => setMode(false));
+document.getElementById('modeMono').addEventListener('click', () => setMode(true));
+bgIn.addEventListener('input', () => { bgFill = bgIn.value; draw(); });
+inkIn.addEventListener('input', render);
+document.getElementById('auto').addEventListener('click', () => { applyColours(userImg || src); render(); });
+cutIn.addEventListener('input', () => {
+  document.getElementById('cutVal').textContent = cutIn.value;
+  render();
+});
+setMode(false);
+
+/* ---------- SVG export: what is on screen, as editable text ---------- */
+function exportSVG() {
+  if (!P || !P.n) return;
+  const W = Math.round(canvas.clientWidth), H = Math.round(canvas.clientHeight);
+  const f = v => +v.toFixed(2);
+  const esc = c => c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c;
+  const fs = P.cellH * 0.98, fsWide = P.cellH * 0.75;
+  const groups = new Map();
+  for (let i = 0; i < P.n; i++) {
+    const s = P.spr[i], wide = s.ch.charCodeAt(0) > 0x2E80, size = wide ? fsWide : fs;
+    const x = f(P.x[i]), y = f(P.y[i] + size * 0.36);              // baseline so the glyph sits centred, like the canvas
+    let t = `<text x="${x}" y="${y}"`;
+    if (wide) t += ` font-size="${f(fsWide)}"`;
+    if (P.r[i]) t += ` transform="rotate(${f(P.r[i] * 180 / Math.PI)} ${f(P.x[i])} ${f(P.y[i])})"`;
+    t += `>${esc(s.ch)}</text>`;
+    if (!groups.has(s.hex)) groups.set(s.hex, []);
+    groups.get(s.hex).push(t);
+  }
+  let body = '';
+  for (const [c, ts] of groups) body += `<g fill="${c}">\n${ts.join('\n')}\n</g>\n`;
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+<rect width="${W}" height="${H}" fill="${bgFill}"/>
+<g font-family="'Arial Black', 'Segoe UI Black', 'Malgun Gothic', sans-serif" font-weight="900" font-size="${f(fs)}" text-anchor="middle">
+${body}</g>
+</svg>
+`;
+  const name = (input.value.replace(/\s+/g, '').replace(/[\\/:*?"<>|]/g, '').slice(0, 24) || 'handset');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+  a.download = `handset-${name}.svg`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+document.getElementById('svg').addEventListener('click', exportSVG);
 </script>
 </body>
 </html>
