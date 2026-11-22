@@ -174,7 +174,7 @@
           <button id="upload" type="button">Upload</button>
           <button id="reset" type="button" disabled>Default</button>
         </div>
-        <div class="fname" id="fname">기본 이미지 · 파일을 끌어다 놓아도 돼요</div>
+        <div class="fname" id="fname">기본 이미지 · 끌어다 놓기, 붙여넣기도 돼요</div>
         <input id="file" type="file" accept="image/*" hidden>
       </div>
     </div>
@@ -857,7 +857,7 @@ fileIn.addEventListener('change', () => { loadImageFile(fileIn.files[0]); fileIn
 resetB.addEventListener('click', () => {
   userImg = srcCache = null;
   applyColours(src);
-  fname.textContent = '기본 이미지 · 파일을 끌어다 놓아도 돼요';
+  fname.textContent = '기본 이미지 · 끌어다 놓기, 붙여넣기도 돼요';
   resetB.disabled = true;
   setMode(false);
 });
@@ -869,6 +869,15 @@ stageEl.addEventListener('drop', e => {
   e.preventDefault();
   stageEl.classList.remove('drop');
   loadImageFile(e.dataTransfer.files[0]);
+});
+
+// Cmd/Ctrl+V with an image on the clipboard swaps the image; pasting text still goes into the input
+document.addEventListener('paste', e => {
+  const item = [...(e.clipboardData?.items || [])].find(it => it.kind === 'file' && it.type.startsWith('image/'));
+  if (!item) return;
+  e.preventDefault();
+  const f = item.getAsFile();
+  loadImageFile(new File([f], f.name && f.name !== 'image.png' ? f.name : '붙여넣은 이미지', { type: f.type }));
 });
 
 /* ---------- Colour controls ---------- */
